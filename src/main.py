@@ -1,90 +1,134 @@
-import pygame
-import cv2
-import mediapipe as mp
-import time
+import cv2 as cv
+import numpy as np
+import os
+import keras
+import glob
+import matplotlib.pyplot as plt
+import keras
+from keras.datasets import mnist
+from keras.models import Sequential
+from keras.layers import Dense, Dropout, Flatten, BatchNormalization
+from keras.layers import Activation, Dropout
+from keras.layers import Conv2D, MaxPooling2D
+from keras import backend as K
+from keras.optimizers import Adam
+from sklearn.model_selection import train_test_split
 
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(min_detection_confidence=0.7,
-                       min_tracking_confidence=0.7)
-mp_drawing = mp.solutions.drawing_utils
-
-pygame.init()
-pygame.mixer.init()
-
-pygame.mixer.music.load("music.mp3")
+bg = None
 
 
-def recognize_gesture(hand_landmarks):
-    thumb_tip = hand_landmarks[4]  # Thumb tip
-    index_tip = hand_landmarks[8]  # Index finger tip
-    middle_tip = hand_landmarks[12]  # Middle finger tip
-    wrist = hand_landmarks[0]  # Wrist
+def load_model(path):
+    model = keras.models.load_model(path)
 
-    if thumb_tip.y < index_tip.y and abs(thumb_tip.x - index_tip.x) > 0.1:
-        return "thumbs_up"
+    print(model.summary())
+    return model
 
-    if (
-        index_tip.y < wrist.y
-        and middle_tip.y < wrist.y
-        and thumb_tip.x < wrist.x
-    ):
-        return "palm"
 
-    return "none"
+def run_average(image, accumulated_weight):
+    global bg
+    if bg is None:
+        bg = image.copy().astype('float')
+        return
+
+    cv.accumulateWeighted(image, bg, accumulated_weight)
+
+
+def segment(image, threshold=25):
+    global bg
+    diff = cv.absdiff(bg.astype('uint8'), image)
+
+    thresholded = cv.threshold(diff, threshold, 255, cv.THRESH_BINARY)[1]
+    contours, _ = cv.findContours(
+        thresholded.copy(), cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
+
+    if len(contours) == 0:
+        return
+    else:
+        segmented = max(contours, key=cv.contourArea)
+        return thresholded, segmented
+
+
+def get_predicted_gesture(model):
+    image = cv.imread('temp.jpg')
+    image = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
+    image = cv.resize(image, (100, 100))
+
+    image = image.reshape(1, 100, 100, 1)
+
+    prediction = model.predict_on_batch(image)
+    gesture = np.argmax(prediction)
+
+    match gesture:
+        case 0:
+            return 'blank'
+        case 1:
+            return 'ok'
+        case 2:
+            return 'thumbs up'
+        case 3:
+            return 'thumbs down'
+        case 4:
+            return 'fist'
+        case 5:
+            return 'five'
+        case _:
+            return 'blank'
 
 
 def main():
-    is_playing = False
-    last_gesture_time = 0
-    gesture_timeout = 0.5
-    cap = cv2.VideoCapture(0)
+    acummulated_weight = 0.5
+    num_frames = 0
+    k = 0
+    model = load_model('./hand_recognition_model.keras')
 
-    if not cap.isOpened():
-        print("Error: Could not open video device.")
-        return
+    cap = cv.VideoCapture(0)
+    fps = int(cap.get(cv.CAP_PROP_FPS))
 
-    print("Show a thumbs up to play, show your palm to pause.")
+    top, right, bottom, left = 10, 350, 225, 590
 
-    while cap.isOpened():
+    while True:
         ret, frame = cap.read()
-        if not ret:
-            print("Failed to capture video. Exiting...")
-            break
 
-        frame = cv2.flip(frame, 1)
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = hands.process(rgb_frame)
+        frame = cv.resize(frame, (700, 700))
+        frame = cv.flip(frame, 1)
 
-        if result.multi_hand_landmarks:
-            for hand_landmarks in result.multi_hand_landmarks:
-                mp_drawing.draw_landmarks(
-                    frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        frame_copy = frame.copy()
+        h, w = frame.shape[:2]
 
-                gesture = recognize_gesture(hand_landmarks.landmark)
-                current_time = time.time()
+        region = frame[top:bottom, right:left]
+        region = cv.cvtColor(region, cv.COLOR_BGR2GRAY)
+        region = cv.GaussianBlur(region, (7, 7), 1)
 
-                if current_time - last_gesture_time > gesture_timeout:
-                    if gesture == "thumbs_up" and not is_playing:
-                        print("Playing music...")
-                        pygame.mixer.music.play(-1)
-                        is_playing = True
-                        last_gesture_time = current_time
-                    elif gesture == "palm" and is_playing:
-                        print("Pausing music...")
-                        pygame.mixer.music.pause()
-                        is_playing = False
-                        last_gesture_time = current_time
+        if num_frames < 30:
+            run_average(region, acummulated_weight)
+        else:
+            hand = segment(region)
+            if hand:
+                thresholded, segmented = hand
+                cv.drawContours(
+                    frame_copy, [segmented + (right, top)], -1, (0, 0, 255))
 
-        cv2.imshow("Hand Gesture Music Control", frame)
+                if k % (fps / 6) == 0:
+                    cv.imwrite('temp.jpg', thresholded)
+                    gesture = get_predicted_gesture(model)
+                    cv.putText(frame_copy, gesture, (70, 45),
+                               cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+                cv.imshow('thresholded', thresholded)
+
+        cv.rectangle(frame_copy, (left, top), (right, bottom), (0, 0, 255), 2)
+        cv.imshow('video feed', frame_copy)
+
+        k += 1
+        num_frames += 1
+
+        keypress = cv.waitKey(1) & 0xFF
+        if keypress == ord('q'):
             break
 
     cap.release()
-    cv2.destroyAllWindows()
-    pygame.mixer.quit()
-    hands.close()
+    cv.destroyAllWindows()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
