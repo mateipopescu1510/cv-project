@@ -89,7 +89,7 @@ def main():
     while True:
         ret, frame = cap.read()
 
-        frame = cv.resize(frame, (700, 700))
+        # frame = cv.resize(frame, (700, 700))
         frame = cv.flip(frame, 1)
 
         frame_copy = frame.copy()
@@ -97,9 +97,8 @@ def main():
 
         region = frame[top:bottom, right:left]
         region = cv.cvtColor(region, cv.COLOR_BGR2GRAY)
-        region = cv.GaussianBlur(region, (7, 7), 1)
 
-        if num_frames < 30:
+        if num_frames < 300:
             run_average(region, acummulated_weight)
         else:
             hand = segment(region)
@@ -107,13 +106,10 @@ def main():
                 thresholded, segmented = hand
                 cv.drawContours(
                     frame_copy, [segmented + (right, top)], -1, (0, 0, 255))
-
-                if k % (fps / 6) == 0:
-                    cv.imwrite('temp.jpg', thresholded)
-                    gesture = get_predicted_gesture(model)
-                    cv.putText(frame_copy, gesture, (70, 45),
-                               cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-
+                cv.imwrite('temp.jpg', thresholded)
+                gesture = get_predicted_gesture(model)
+                cv.putText(frame_copy, gesture, (70, 45),
+                           cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                 cv.imshow('thresholded', thresholded)
 
         cv.rectangle(frame_copy, (left, top), (right, bottom), (0, 0, 255), 2)
