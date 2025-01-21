@@ -1,41 +1,25 @@
 import cv2 as cv
 import numpy as np
-import os
 import keras
-import glob
-import matplotlib.pyplot as plt
-import keras
-from keras.datasets import mnist
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Flatten, BatchNormalization
-from keras.layers import Activation, Dropout
-from keras.layers import Conv2D, MaxPooling2D
-from keras import backend as K
-from keras.optimizers import Adam
-from sklearn.model_selection import train_test_split
+from keras.models import load_model
 
-bg = None
+background = None
+calibration_frames = 30  # Frames to calibrate during recalibration
+frame_count = 0
 
 
-def load_model(path):
-    model = keras.models.load_model(path)
-
-    print(model.summary())
-    return model
-
-
-def run_average(image, accumulated_weight):
-    global bg
-    if bg is None:
-        bg = image.copy().astype('float')
+def calibrate_background(region, accumulated_weight):
+    global background
+    if background is None:
+        background = region.copy().astype('float')
         return
 
-    cv.accumulateWeighted(image, bg, accumulated_weight)
+    cv.accumulateWeighted(region, background, accumulated_weight)
 
 
 def segment(image, threshold=25):
-    global bg
-    diff = cv.absdiff(bg.astype('uint8'), image)
+    global background
+    diff = cv.absdiff(background.astype('uint8'), image)
 
     thresholded = cv.threshold(diff, threshold, 255, cv.THRESH_BINARY)[1]
     contours, _ = cv.findContours(
@@ -60,71 +44,83 @@ def get_predicted_gesture(model):
 
     match gesture:
         case 0:
-            return 'blank'
+            return 'Blank'
         case 1:
-            return 'ok'
+            return 'Ok'
         case 2:
-            return 'thumbs up'
+            return 'Thumbs up'
         case 3:
-            return 'thumbs down'
+            return 'Thumbs down'
         case 4:
-            return 'fist'
+            return 'Fist'
         case 5:
-            return 'five'
+            return 'Five'
         case _:
-            return 'blank'
+            return 'Blank'
 
 
 def main():
-    acummulated_weight = 0.5
-    num_frames = 0
-    k = 0
+    global background, frame_count
+    accumulated_weight = 0.1
+    recalibrating = True
     model = load_model('./hand_recognition_model.keras')
 
     cap = cv.VideoCapture(0)
     fps = int(cap.get(cv.CAP_PROP_FPS))
 
-    top, right, bottom, left = 10, 350, 225, 590
+    top, right, bottom, left = 0, 300, 300, 600
 
     while True:
-        ret, frame = cap.read()
-
-        # frame = cv.resize(frame, (700, 700))
+        _, frame = cap.read()
         frame = cv.flip(frame, 1)
-
         frame_copy = frame.copy()
-        h, w = frame.shape[:2]
+        region = cv.cvtColor(frame[top:bottom, right:left], cv.COLOR_BGR2GRAY)
+        region = cv.GaussianBlur(region, (7, 7), 1.0)
 
-        region = frame[top:bottom, right:left]
-        region = cv.cvtColor(region, cv.COLOR_BGR2GRAY)
+        if recalibrating:
+            if frame_count < calibration_frames:
+                calibrate_background(region, accumulated_weight)
+                cv.putText(
+                    frame_copy,
+                    "Recalibrating...",
+                    (70, 45),
+                    cv.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (0, 0, 255),
+                    2,
+                )
+                frame_count += 1
+            else:
+                recalibrating = False
 
-        if num_frames < 300:
-            run_average(region, acummulated_weight)
         else:
-            hand = segment(region)
-            if hand:
-                thresholded, segmented = hand
+            segmented_region = segment(region)
+            if segmented_region:
+                thresholded, segmented = segmented_region
                 cv.drawContours(
-                    frame_copy, [segmented + (right, top)], -1, (0, 0, 255))
-                cv.imwrite('temp.jpg', thresholded)
+                    frame_copy, [segmented + (right, top)], -1, (0, 0, 255)
+                )
+                cv.imwrite("temp.jpg", thresholded)
                 gesture = get_predicted_gesture(model)
-                cv.putText(frame_copy, gesture, (70, 45),
-                           cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv.imshow('thresholded', thresholded)
+                cv.putText(
+                    frame_copy, gesture, (70, 45),
+                    cv.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2
+                )
+                cv.imshow("thresholded", thresholded)
 
         cv.rectangle(frame_copy, (left, top), (right, bottom), (0, 0, 255), 2)
-        cv.imshow('video feed', frame_copy)
-
-        k += 1
-        num_frames += 1
+        cv.imshow("video feed", frame_copy)
 
         keypress = cv.waitKey(1) & 0xFF
-        if keypress == ord('q'):
+        if keypress == ord("q"):
             break
-
+        elif keypress == ord("r"):
+            recalibrating = True
+            background = None
+            frame_count = 0
     cap.release()
     cv.destroyAllWindows()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
